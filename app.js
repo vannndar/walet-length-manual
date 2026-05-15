@@ -10,6 +10,7 @@ const rulerDistanceText = document.getElementById("rulerDistanceText");
 const birdDistanceText = document.getElementById("birdDistanceText");
 const measurementText = document.getElementById("measurementText");
 const zoomInfoText = document.getElementById("zoomInfoText");
+const previewModeBadge = document.getElementById("previewModeBadge");
 const zoomInButton = document.getElementById("zoomInButton");
 const zoomOutButton = document.getElementById("zoomOutButton");
 const fitViewButton = document.getElementById("fitViewButton");
@@ -20,6 +21,11 @@ const noneToolButton = document.getElementById("tool-none");
 const togglePointLabels = document.getElementById("togglePointLabels");
 const toggleDistanceLabels = document.getElementById("toggleDistanceLabels");
 const toggleGuideLines = document.getElementById("toggleGuideLines");
+
+const MIN_SCALE = 0.08;
+const MAX_SCALE = 12;
+const DRAG_THRESHOLD = 6;
+const PAN_MARGIN = 80;
 
 const tools = [
   {
@@ -54,10 +60,7 @@ const state = {
   },
   activeTool: "rulerStart",
   hoveredPoint: null,
-  draggingPoint: null,
   pointerImage: null,
-  panning: false,
-  lastPointer: null,
   transform: {
     scale: 1,
     offsetX: 0,
@@ -68,6 +71,19 @@ const state = {
     showDistanceLabels: true,
     showGuideLines: true,
   },
+  activePointers: new Map(),
+  interaction: {
+    kind: null,
+    pointerId: null,
+    pointKey: null,
+    startClientX: 0,
+    startClientY: 0,
+    startOffsetX: 0,
+    startOffsetY: 0,
+    moved: false,
+    startImagePoint: null,
+    pinch: null,
+  },
 };
 
 function resizeCanvas() {
@@ -76,6 +92,8 @@ function resizeCanvas() {
   canvas.width = Math.round(rect.width * ratio);
   canvas.height = Math.round(rect.height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  constrainTransform();
+  updateZoomInfo();
   draw();
 }
 
@@ -94,44 +112,70 @@ function loadImage(src) {
   image.src = src;
 }
 
+function getViewportSize() {
+  const rect = canvas.getBoundingClientRect();
+  return { width: rect.width, height: rect.height };
+}
+
 function fitImageToViewport() {
   if (!state.image) {
     draw();
     return;
   }
 
-  const rect = canvas.getBoundingClientRect();
+  const viewport = getViewportSize();
   const padding = 40;
-  const scaleX = (rect.width - padding * 2) / state.image.width;
-  const scaleY = (rect.height - padding * 2) / state.image.height;
-  state.transform.scale = Math.min(scaleX, scaleY, 1);
-  state.transform.offsetX = (rect.width - state.image.width * state.transform.scale) / 2;
-  state.transform.offsetY = (rect.height - state.image.height * state.transform.scale) / 2;
+  const scaleX = (viewport.width - padding * 2) / state.image.width;
+  const scaleY = (viewport.height - padding * 2) / state.image.height;
+  state.transform.scale = clampScale(Math.min(scaleX, scaleY, 1));
+  state.transform.offsetX = (viewport.width - state.image.width * state.transform.scale) / 2;
+  state.transform.offsetY = (viewport.height - state.image.height * state.transform.scale) / 2;
+  constrainTransform();
   updateZoomInfo();
   draw();
+}
+
+function clampScale(scale) {
+  return Math.min(Math.max(scale, MIN_SCALE), MAX_SCALE);
+}
+
+function constrainTransform() {
+  if (!state.image) {
+    return;
+  }
+
+  const viewport = getViewportSize();
+  const scaledWidth = state.image.width * state.transform.scale;
+  const scaledHeight = state.image.height * state.transform.scale;
+
+  if (scaledWidth <= viewport.width) {
+    state.transform.offsetX = (viewport.width - scaledWidth) / 2;
+  } else {
+    const minX = viewport.width - scaledWidth - PAN_MARGIN;
+    const maxX = PAN_MARGIN;
+    state.transform.offsetX = Math.min(maxX, Math.max(minX, state.transform.offsetX));
+  }
+
+  if (scaledHeight <= viewport.height) {
+    state.transform.offsetY = (viewport.height - scaledHeight) / 2;
+  } else {
+    const minY = viewport.height - scaledHeight - PAN_MARGIN;
+    const maxY = PAN_MARGIN;
+    state.transform.offsetY = Math.min(maxY, Math.max(minY, state.transform.offsetY));
+  }
 }
 
 function updateZoomInfo() {
   zoomInfoText.textContent = `Zoom: ${(state.transform.scale * 100).toFixed(0)}%`;
 }
 
-function zoomAtViewportCenter(factor) {
-  if (!state.image) {
+function updatePreviewBadge() {
+  if (state.activeTool === null) {
+    previewModeBadge.textContent = "Mode lihat: drag untuk pan, scroll untuk zoom";
     return;
   }
 
-  const rect = canvas.getBoundingClientRect();
-  const centerX = rect.width / 2;
-  const centerY = rect.height / 2;
-  const imageX = (centerX - state.transform.offsetX) / state.transform.scale;
-  const imageY = (centerY - state.transform.offsetY) / state.transform.scale;
-  const nextScale = Math.min(Math.max(state.transform.scale * factor, 0.08), 12);
-
-  state.transform.scale = nextScale;
-  state.transform.offsetX = centerX - imageX * state.transform.scale;
-  state.transform.offsetY = centerY - imageY * state.transform.scale;
-  updateZoomInfo();
-  draw();
+  previewModeBadge.textContent = `${getEndpointMeta(state.activeTool).label}: klik untuk tandai, Ctrl + drag untuk pan`;
 }
 
 function getEndpointMeta(pointKey) {
@@ -158,23 +202,34 @@ function setActiveTool(toolId) {
   noneToolButton.classList.toggle("active", toolId === null);
 
   if (toolId === null) {
-    instructionText.textContent = "Mode lihat aktif. Klik gambar tidak akan membuat titik baru.";
-    draw();
-    return;
+    instructionText.textContent = "Mode lihat aktif. Drag untuk pan, scroll atau pinch untuk zoom.";
+  } else {
+    instructionText.textContent = `Klik atau tap untuk menandai ${getEndpointMeta(toolId).label}.`;
   }
 
-  instructionText.textContent = `Klik untuk menandai ${getEndpointMeta(toolId).label}.`;
+  updatePreviewBadge();
+  updateCanvasCursor();
   draw();
 }
 
-function imagePointFromEvent(event) {
+function canvasPointFromClient(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
   return {
-    x: (x - state.transform.offsetX) / state.transform.scale,
-    y: (y - state.transform.offsetY) / state.transform.scale,
+    x: clientX - rect.left,
+    y: clientY - rect.top,
   };
+}
+
+function imagePointFromClient(clientX, clientY) {
+  const canvasPoint = canvasPointFromClient(clientX, clientY);
+  return {
+    x: (canvasPoint.x - state.transform.offsetX) / state.transform.scale,
+    y: (canvasPoint.y - state.transform.offsetY) / state.transform.scale,
+  };
+}
+
+function imagePointFromEvent(event) {
+  return imagePointFromClient(event.clientX, event.clientY);
 }
 
 function canvasPointFromImage(point) {
@@ -195,12 +250,8 @@ function clampPoint(point) {
   };
 }
 
-function getPointAtCanvasPosition(event) {
-  const rect = canvas.getBoundingClientRect();
-  const mouse = {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
-  };
+function getPointAtCanvasPosition(clientX, clientY) {
+  const canvasPoint = canvasPointFromClient(clientX, clientY);
   const radius = 12;
 
   for (const pointKey of Object.keys(state.points)) {
@@ -209,8 +260,8 @@ function getPointAtCanvasPosition(event) {
       continue;
     }
 
-    const canvasPoint = canvasPointFromImage(point);
-    const distance = Math.hypot(mouse.x - canvasPoint.x, mouse.y - canvasPoint.y);
+    const pointCanvas = canvasPointFromImage(point);
+    const distance = Math.hypot(canvasPoint.x - pointCanvas.x, canvasPoint.y - pointCanvas.y);
     if (distance <= radius) {
       return pointKey;
     }
@@ -362,7 +413,6 @@ function drawPerpendicularCaps(pointA, pointB, color) {
   const dx = pointB.x - pointA.x;
   const dy = pointB.y - pointA.y;
   const length = Math.hypot(dx, dy);
-
   if (!length) {
     return;
   }
@@ -399,11 +449,7 @@ function drawCap(centerPoint, unitPerpX, unitPerpY, capLength, color) {
 }
 
 function drawPerpendicularGuideFromPoints(point, pairPoint, color) {
-  if (!state.settings.showGuideLines) {
-    return;
-  }
-
-  if (!point || !pairPoint) {
+  if (!state.settings.showGuideLines || !point || !pairPoint) {
     return;
   }
 
@@ -441,11 +487,11 @@ function drawPerpendicularGuideFromPoints(point, pairPoint, color) {
 }
 
 function drawActiveGuide() {
-  if (!state.settings.showGuideLines) {
+  if (!state.settings.showGuideLines || !state.pointerImage) {
     return;
   }
 
-  if (state.activeTool === "rulerEnd" && state.points.rulerStart && state.pointerImage && !state.points.rulerEnd) {
+  if (state.activeTool === "rulerEnd" && state.points.rulerStart && !state.points.rulerEnd) {
     drawPerpendicularGuideFromPoints(
       state.points.rulerStart,
       state.pointerImage,
@@ -460,33 +506,31 @@ function drawActiveGuide() {
     return;
   }
 
-  if (state.activeTool !== "birdEnd" || !state.points.birdStart || !state.pointerImage || state.points.birdEnd) {
-    return;
+  if (state.activeTool === "birdEnd" && state.points.birdStart && !state.points.birdEnd) {
+    drawPerpendicularGuideFromPoints(
+      state.points.birdStart,
+      state.pointerImage,
+      "rgba(234, 88, 12, 0.85)"
+    );
+    const startCanvas = canvasPointFromImage(state.points.birdStart);
+    ctx.save();
+    ctx.fillStyle = "rgba(234, 88, 12, 0.9)";
+    ctx.font = "bold 12px Segoe UI";
+    ctx.fillText("Tempatkan titik akhir di sisi garis bantu ini", startCanvas.x + 12, startCanvas.y - 12);
+    ctx.restore();
   }
-
-  drawPerpendicularGuideFromPoints(
-    state.points.birdStart,
-    state.pointerImage,
-    "rgba(234, 88, 12, 0.85)"
-  );
-  const startCanvas = canvasPointFromImage(state.points.birdStart);
-  ctx.save();
-  ctx.fillStyle = "rgba(234, 88, 12, 0.9)";
-  ctx.font = "bold 12px Segoe UI";
-  ctx.fillText("Tempatkan titik akhir di sisi garis bantu ini", startCanvas.x + 12, startCanvas.y - 12);
-  ctx.restore();
 }
 
 function draw() {
-  const rect = canvas.getBoundingClientRect();
-  ctx.clearRect(0, 0, rect.width, rect.height);
+  const viewport = getViewportSize();
+  ctx.clearRect(0, 0, viewport.width, viewport.height);
 
   if (!state.image) {
     ctx.save();
     ctx.fillStyle = "rgba(46, 36, 25, 0.6)";
     ctx.font = "600 20px Segoe UI";
     ctx.textAlign = "center";
-    ctx.fillText("Load image untuk mulai anotasi", rect.width / 2, rect.height / 2);
+    ctx.fillText("Load image untuk mulai anotasi", viewport.width / 2, viewport.height / 2);
     ctx.restore();
     return;
   }
@@ -538,74 +582,284 @@ function resetAll() {
   draw();
 }
 
-canvas.addEventListener("pointerdown", (event) => {
-  if (!state.image) {
+function startPan(pointerId, clientX, clientY) {
+  state.interaction.kind = "pan";
+  state.interaction.pointerId = pointerId;
+  state.interaction.startClientX = clientX;
+  state.interaction.startClientY = clientY;
+  state.interaction.startOffsetX = state.transform.offsetX;
+  state.interaction.startOffsetY = state.transform.offsetY;
+  state.interaction.moved = false;
+  previewModeBadge.textContent = "Sedang pan...";
+  updateCanvasCursor();
+}
+
+function startPointDrag(pointerId, pointKey) {
+  state.interaction.kind = "drag-point";
+  state.interaction.pointerId = pointerId;
+  state.interaction.pointKey = pointKey;
+  previewModeBadge.textContent = `${getEndpointMeta(pointKey).label}: drag untuk koreksi`;
+  updateCanvasCursor();
+}
+
+function startPlacement(pointerId, clientX, clientY) {
+  state.interaction.kind = "place-point";
+  state.interaction.pointerId = pointerId;
+  state.interaction.startClientX = clientX;
+  state.interaction.startClientY = clientY;
+  state.interaction.startImagePoint = clampPoint(imagePointFromClient(clientX, clientY));
+  state.interaction.moved = false;
+  previewModeBadge.textContent = `${getEndpointMeta(state.activeTool).label}: lepas untuk simpan titik`;
+}
+
+function startPinchGesture() {
+  const touchPointers = [...state.activePointers.values()].filter((pointer) => pointer.pointerType === "touch");
+  if (touchPointers.length < 2) {
     return;
   }
 
-  if (event.ctrlKey) {
-    state.panning = true;
-    state.lastPointer = { x: event.clientX, y: event.clientY };
+  const [first, second] = touchPointers;
+  const midpointX = (first.clientX + second.clientX) / 2;
+  const midpointY = (first.clientY + second.clientY) / 2;
+  const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+  const focusImage = clampPoint(imagePointFromClient(midpointX, midpointY));
+
+  state.interaction.kind = "pinch";
+  state.interaction.pointerId = null;
+  state.interaction.pointKey = null;
+  state.interaction.pinch = {
+    startDistance: Math.max(distance, 1),
+    startScale: state.transform.scale,
+    focusImage,
+  };
+  previewModeBadge.textContent = "Pinch zoom aktif";
+  updateCanvasCursor();
+}
+
+function clearInteraction() {
+  state.interaction.kind = null;
+  state.interaction.pointerId = null;
+  state.interaction.pointKey = null;
+  state.interaction.startClientX = 0;
+  state.interaction.startClientY = 0;
+  state.interaction.startOffsetX = 0;
+  state.interaction.startOffsetY = 0;
+  state.interaction.startImagePoint = null;
+  state.interaction.moved = false;
+  state.interaction.pinch = null;
+  updatePreviewBadge();
+  updateCanvasCursor();
+}
+
+function updateCanvasCursor() {
+  if (state.interaction.kind === "pan" || state.interaction.kind === "drag-point" || state.interaction.kind === "pinch") {
     canvas.style.cursor = "grabbing";
     return;
   }
 
-  const hitPoint = getPointAtCanvasPosition(event);
+  if (state.activeTool === null) {
+    canvas.style.cursor = "grab";
+    return;
+  }
+
+  canvas.style.cursor = state.hoveredPoint ? "grab" : "crosshair";
+}
+
+function zoomAtCanvasPoint(factor, canvasX, canvasY) {
+  if (!state.image) {
+    return;
+  }
+
+  const imageX = (canvasX - state.transform.offsetX) / state.transform.scale;
+  const imageY = (canvasY - state.transform.offsetY) / state.transform.scale;
+  const nextScale = clampScale(state.transform.scale * factor);
+
+  state.transform.scale = nextScale;
+  state.transform.offsetX = canvasX - imageX * state.transform.scale;
+  state.transform.offsetY = canvasY - imageY * state.transform.scale;
+  constrainTransform();
+  updateZoomInfo();
+  draw();
+}
+
+function zoomAtViewportCenter(factor) {
+  const viewport = getViewportSize();
+  zoomAtCanvasPoint(factor, viewport.width / 2, viewport.height / 2);
+}
+
+function handlePointerDown(event) {
+  if (!state.image) {
+    return;
+  }
+
+  canvas.setPointerCapture(event.pointerId);
+  state.activePointers.set(event.pointerId, {
+    pointerId: event.pointerId,
+    pointerType: event.pointerType,
+    clientX: event.clientX,
+    clientY: event.clientY,
+  });
+
+  state.pointerImage = clampPoint(imagePointFromEvent(event));
+  state.hoveredPoint = getPointAtCanvasPosition(event.clientX, event.clientY);
+
+  const touchPointers = [...state.activePointers.values()].filter((pointer) => pointer.pointerType === "touch");
+  if (touchPointers.length >= 2) {
+    startPinchGesture();
+    draw();
+    return;
+  }
+
+  const hitPoint = getPointAtCanvasPosition(event.clientX, event.clientY);
   if (hitPoint) {
-    state.draggingPoint = hitPoint;
-    canvas.style.cursor = "grabbing";
+    startPointDrag(event.pointerId, hitPoint);
     return;
   }
 
-  if (event.button === 0 && state.activeTool) {
-    setPoint(state.activeTool, imagePointFromEvent(event));
+  const shouldPan = state.activeTool === null || event.ctrlKey;
+  if (shouldPan) {
+    startPan(event.pointerId, event.clientX, event.clientY);
+    return;
   }
-});
 
-canvas.addEventListener("pointermove", (event) => {
+  if (event.button === 0 || event.pointerType === "touch") {
+    startPlacement(event.pointerId, event.clientX, event.clientY);
+  }
+}
+
+function handlePointerMove(event) {
   if (!state.image) {
     return;
+  }
+
+  const trackedPointer = state.activePointers.get(event.pointerId);
+  if (trackedPointer) {
+    trackedPointer.clientX = event.clientX;
+    trackedPointer.clientY = event.clientY;
   }
 
   state.pointerImage = clampPoint(imagePointFromEvent(event));
 
-  if (state.draggingPoint) {
-    state.points[state.draggingPoint] = state.pointerImage;
+  if (state.interaction.kind === "pinch") {
+    const touchPointers = [...state.activePointers.values()].filter((pointer) => pointer.pointerType === "touch");
+    if (touchPointers.length >= 2) {
+      const [first, second] = touchPointers;
+      const midpoint = {
+        x: (first.clientX + second.clientX) / 2,
+        y: (first.clientY + second.clientY) / 2,
+      };
+      const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+      const nextScale = clampScale(
+        state.interaction.pinch.startScale * (Math.max(distance, 1) / state.interaction.pinch.startDistance)
+      );
+      const canvasMidpoint = canvasPointFromClient(midpoint.x, midpoint.y);
+
+      state.transform.scale = nextScale;
+      state.transform.offsetX = canvasMidpoint.x - state.interaction.pinch.focusImage.x * state.transform.scale;
+      state.transform.offsetY = canvasMidpoint.y - state.interaction.pinch.focusImage.y * state.transform.scale;
+      constrainTransform();
+      updateZoomInfo();
+      draw();
+    }
+    return;
+  }
+
+  if (state.interaction.kind === "drag-point" && state.interaction.pointerId === event.pointerId) {
+    state.points[state.interaction.pointKey] = state.pointerImage;
     updateStatus();
     draw();
     return;
   }
 
-  if (state.panning && state.lastPointer) {
-    const deltaX = event.clientX - state.lastPointer.x;
-    const deltaY = event.clientY - state.lastPointer.y;
-  state.transform.offsetX += deltaX;
-  state.transform.offsetY += deltaY;
-  state.lastPointer = { x: event.clientX, y: event.clientY };
-  updateZoomInfo();
+  if (state.interaction.kind === "pan" && state.interaction.pointerId === event.pointerId) {
+    const deltaX = event.clientX - state.interaction.startClientX;
+    const deltaY = event.clientY - state.interaction.startClientY;
+    state.transform.offsetX = state.interaction.startOffsetX + deltaX;
+    state.transform.offsetY = state.interaction.startOffsetY + deltaY;
+    state.interaction.moved = Math.hypot(deltaX, deltaY) > DRAG_THRESHOLD;
+    constrainTransform();
+    updateZoomInfo();
+    draw();
+    return;
+  }
+
+  if (state.interaction.kind === "place-point" && state.interaction.pointerId === event.pointerId) {
+    const movedDistance = Math.hypot(
+      event.clientX - state.interaction.startClientX,
+      event.clientY - state.interaction.startClientY
+    );
+    state.interaction.moved = movedDistance > DRAG_THRESHOLD;
+    if (state.interaction.moved) {
+      previewModeBadge.textContent = "Gerakan terdeteksi: titik tidak akan dibuat sampai klik singkat";
+    }
+    draw();
+    return;
+  }
+
+  state.hoveredPoint = getPointAtCanvasPosition(event.clientX, event.clientY);
+  updateCanvasCursor();
   draw();
-  return;
 }
 
-  const hitPoint = getPointAtCanvasPosition(event);
-  state.hoveredPoint = hitPoint;
-  canvas.style.cursor = hitPoint ? "grab" : "crosshair";
-});
+function handlePointerUp(event) {
+  if (state.interaction.kind === "place-point" && state.interaction.pointerId === event.pointerId) {
+    if (!state.interaction.moved && state.activeTool !== null) {
+      setPoint(state.activeTool, state.interaction.startImagePoint);
+    }
+    clearInteraction();
+  } else if (state.interaction.kind === "drag-point" && state.interaction.pointerId === event.pointerId) {
+    updateStatus();
+    clearInteraction();
+    draw();
+  } else if (state.interaction.kind === "pan" && state.interaction.pointerId === event.pointerId) {
+    clearInteraction();
+    draw();
+  } else if (state.interaction.kind === "pinch") {
+    clearInteraction();
+    draw();
+  }
 
-canvas.addEventListener("pointerup", () => {
-  state.draggingPoint = null;
-  state.panning = false;
-  state.lastPointer = null;
-  canvas.style.cursor = state.hoveredPoint ? "grab" : "crosshair";
-});
+  state.activePointers.delete(event.pointerId);
 
+  const touchPointers = [...state.activePointers.values()].filter((pointer) => pointer.pointerType === "touch");
+  if (touchPointers.length >= 2) {
+    startPinchGesture();
+  }
+
+  state.hoveredPoint = null;
+  updateCanvasCursor();
+}
+
+function handlePointerCancel(event) {
+  state.activePointers.delete(event.pointerId);
+  clearInteraction();
+  updateCanvasCursor();
+  draw();
+}
+
+canvas.addEventListener("pointerdown", handlePointerDown);
+canvas.addEventListener("pointermove", handlePointerMove);
+canvas.addEventListener("pointerup", handlePointerUp);
+canvas.addEventListener("pointercancel", handlePointerCancel);
 canvas.addEventListener("pointerleave", () => {
-  state.draggingPoint = null;
   state.pointerImage = null;
-  state.panning = false;
-  state.lastPointer = null;
-  canvas.style.cursor = "crosshair";
+  if (!state.activePointers.size) {
+    state.hoveredPoint = null;
+  }
+  updateCanvasCursor();
+  draw();
 });
+
+canvas.addEventListener("wheel", (event) => {
+  if (!state.image) {
+    return;
+  }
+
+  event.preventDefault();
+  const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const canvasPoint = canvasPointFromClient(event.clientX, event.clientY);
+  zoomAtCanvasPoint(factor, canvasPoint.x, canvasPoint.y);
+}, { passive: false });
 
 imageLoader.addEventListener("change", (event) => {
   const [file] = event.target.files;
@@ -646,9 +900,9 @@ toggleGuideLines.addEventListener("change", () => {
   draw();
 });
 
-fitViewButton.addEventListener("click", fitImageToViewport);
 zoomInButton.addEventListener("click", () => zoomAtViewportCenter(1.15));
 zoomOutButton.addEventListener("click", () => zoomAtViewportCenter(1 / 1.15));
+fitViewButton.addEventListener("click", fitImageToViewport);
 resetBirdButton.addEventListener("click", resetBird);
 resetRulerButton.addEventListener("click", resetRuler);
 resetAllButton.addEventListener("click", resetAll);
@@ -662,5 +916,4 @@ window.addEventListener("resize", resizeCanvas);
 
 setActiveTool("rulerStart");
 resizeCanvas();
-updateZoomInfo();
 loadImage("burung-h.jpeg");

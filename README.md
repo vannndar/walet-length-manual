@@ -18,8 +18,8 @@ Penandaannya memakai titik awal dan akhir, dengan garis bantu di ujung-ujung yan
 - Nilai `10` bisa diubah kalau mau memakai jarak referensi lain.
 - Titik yang sudah dibuat bisa digeser ulang dengan drag.
 - Di ujung garis pengukuran burung dan penggaris akan muncul cap garis tegak lurus terhadap garis dari titik A ke B.
-- Area preview tidak lagi memakai scroll untuk zoom.
-- Gunakan tombol `Zoom +`, `Zoom -`, atau `Fit image` di panel kiri untuk mengatur pembesaran.
-- Gunakan `Ctrl + drag` pada preview untuk menggeser gambar.
-- Pilih mode `Tidak memilih` bila ingin melihat gambar tanpa menambah titik.
+- Scroll pada preview dipakai untuk zoom dan fokus zoom mengikuti posisi cursor.
+- Gunakan tombol `Zoom +`, `Zoom -`, atau `Fit image` di panel kiri sebagai alternatif.
+- Pilih `Mode lihat` untuk pan dengan drag pada desktop atau satu jari pada touch device.
+- Pada mobile/tablet, dua jari dipakai untuk pinch zoom dan pan.
 - Panel `Pengaturan Keterangan` dipakai untuk menyalakan atau mematikan label titik, label jarak, dan garis bantu.

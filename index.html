@@ -40,7 +40,7 @@
           <button id="tool-ruler-end" type="button" class="tool-button">2. Titik 10</button>
           <button id="tool-bird-start" type="button" class="tool-button">3. Awal burung</button>
           <button id="tool-bird-end" type="button" class="tool-button">4. Akhir burung</button>
-          <button id="tool-none" type="button" class="tool-button secondary tool-full">Tidak memilih</button>
+          <button id="tool-none" type="button" class="tool-button secondary tool-full">Mode lihat</button>
         </div>
         <p id="instructionText" class="helper emphasis"></p>
       </div>
@@ -95,13 +95,14 @@
         </div>
         <p id="zoomInfoText" class="helper">Zoom: 100%</p>
         <p class="helper">
-          Klik untuk membuat titik. Pilih `Tidak memilih` bila hanya ingin melihat gambar. Gunakan tombol zoom di kiri, dan `Ctrl + drag` di preview untuk menggeser gambar.
+          Mode anotasi: klik atau tap untuk membuat titik. Mode lihat: drag untuk pan, scroll untuk zoom, pinch untuk zoom di mobile.
         </p>
       </div>
     </aside>
 
     <main class="workspace">
       <div class="canvas-frame">
+        <div id="previewModeBadge" class="preview-badge">Mode anotasi</div>
         <canvas id="annotationCanvas"></canvas>
       </div>
     </main>
